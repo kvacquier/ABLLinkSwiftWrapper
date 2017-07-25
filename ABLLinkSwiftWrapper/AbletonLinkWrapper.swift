@@ -83,7 +83,7 @@ public class AbletonLinkWrapper:NSObject {
 	
 	var delegate: AbletonLinkDelegate?
 	
-	public func setup(bpm:Double = 120, quantum:Float64 = QUANTUM_DEFAULT){
+	public func setup(bpm:Double = 120, quantum:Float64 = 4.0){
 		
 		if (debug){ print("ABL: Init") }
 		
