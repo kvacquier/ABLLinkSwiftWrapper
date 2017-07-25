@@ -1,646 +1,1159 @@
 //
-//  AbletonLinkWrapper.swift
+//  MenuViewController.swift
+//  LightRider
 //
-//  Created by Kevin Vacquier on 24/07/17.
-//  Copyright © 2017 Kevin Vacquier. All rights reserved.
-//  Inspired by Jason Snell LinkWrapper.
+//  Created by Kevin on 08/02/2017.
+//  Copyright © 2017 Lightingsoft. All rights reserved.
 //
 
-
-import Foundation
 import UIKit
-import AVFoundation
+import SlideMenuControllerSwift
+import XHL_XHardwareLibrarySwift
+import SDKMobile
+import ALLoadingView
+import Crashlytics
 
-
-struct EngineData {
+class MenuViewController: UITableViewController, SlideMenuControllerDelegate, CallBackEnumerate, ProjectManagerDelegate, UITextFieldDelegate, CallBackHotPlug {
 	
-	var outputLatency:UInt32 = 0
-	var resetToBeatTime:Float64 = 0
-	var proposeBpm:Float64 = 120
-	var quantum:Float64 = 8
-	var isPlaying:Bool = false
+	let defaultFont = UIFont(name: "Roboto-Medium", size: 16)
+	let defaultFontColor = UIColor(colorLiteralRed: 102/255, green: 102/255, blue: 102/255, alpha: 1)
+	static var colorForCellUnselected = UIColor(colorLiteralRed: 41/255, green: 41/255, blue: 41/255, alpha: 1)
+	static var colorForCellSelected = UIColor(colorLiteralRed: 50/255, green: 50/255, blue: 50/255, alpha: 1)
 	
-}
-
-struct LinkData {
+	var appDelegate: AppDelegate? = nil
+	var projectNameList: [String] = [String]()
+	private var selectedViewId = 0
+	private var deleteMode = false
+	private var selectedItemToEdit = -1
+	private var editingInterface = false
+	private var editingProjects = false
+	private var interfaceName: String = "Art Net Device"
+	private var artNetPort: String = "0"
+	private var ipAddressArray: [String] = []
+	private var networkMaskArray: [String] = []
+	private var firstEnumerate: Bool = true
+	private var currentStoredDevice: StoredVirtualDevice = StoredVirtualDevice(interfaceName: "artNet", artNetPort: "7", ipAddressArray: ["192", "168", "1", "125"], networkMaskArray: ["255", "255", "255", "0"])
 	
-	//Structure that stores all data needed by the audio callback.
-	
-	var ablLink:ABLLinkRef
-	// Shared between threads. Only write when engine not running.
-	var sampleRate:Float64
-	// Shared between threads. Only write when engine not running.
-	var secondsToHostTime:Float64
-	// Shared between threads. Written by the main thread and only
-	// read by the audio thread when doing so will not block.
-	var sharedEngineData:EngineData
-	// Copy of sharedEngineData owned by audio thread.
-	var localEngineData:EngineData
-	// Owned by audio thread
-	var timeAtLastClick:UInt64
-	
-}
-
-
-protocol AbletonLinkDelegate {
-	func tempoDidChange(bpm: Double, quantum: Double)
-	func linkEnabled(enable: Bool)
-	func connectionStatusChange(enable: Bool)
-}
-
-public class AbletonLinkWrapper:NSObject {
-	
-	//MARK:-
-	//MARK:CONSTANTS
-	
-	fileprivate let INVALID_BEAT_TIME:Double = Double.leastNormalMagnitude
-	fileprivate let INVALID_BPM:Double = Double.leastNormalMagnitude
-	fileprivate let QUANTUM_DEFAULT:Float64 = 4
-	
-	//MARK: - VARS
-	//var lock = os_unfair_lock() //ios10
-	fileprivate var lock:OSSpinLock = OSSpinLock()
-	
-	fileprivate var linkData:LinkData?
-	
-	//timer
-	fileprivate var timer:Timer = Timer()
-	fileprivate let timerSpeed:Double = 0.1
-	
-	//debug
-	fileprivate var debug:Bool = false
-	
-	//MARK: - PUBLIC API -
-	
-	//MARK:INIT
-	
-	//singleton code
-	public static let sharedInstance = LinkWrapper()
-	
-	fileprivate override init() {
-		super.init()
-	}
-	
-	var delegate: AbletonLinkDelegate?
-	
-	public func setup(bpm:Double = 120, quantum:Float64 = QUANTUM_DEFAULT){
-		
-		if (debug){ print("ABL: Init") }
-		
-		var timeInfo = mach_timebase_info_data_t()
-		mach_timebase_info(&timeInfo)
-		
-		let ablLink:ABLLinkRef = ABLLinkNew(bpm)
-		
-		let sharedEngineData:EngineData = EngineData()
-		let localEngineData:EngineData = EngineData()
-		
-		
-		linkData = LinkData(
-			ablLink: ablLink,
-			sampleRate: AVAudioSession.sharedInstance().sampleRate,
-			secondsToHostTime: (1.0e9 * Float64(timeInfo.denom)) / Float64(timeInfo.numer),
-			sharedEngineData: sharedEngineData,
-			localEngineData: localEngineData,
-			timeAtLastClick: 0)
-		
-		if (linkData != nil){
-			linkData!.sharedEngineData.outputLatency = UInt32(linkData!.secondsToHostTime * AVAudioSession.sharedInstance().outputLatency)
-			linkData!.sharedEngineData.resetToBeatTime = INVALID_BEAT_TIME
-			linkData!.sharedEngineData.proposeBpm = INVALID_BPM
-			linkData!.sharedEngineData.quantum = quantum // incoming from sequencer during init
-			linkData!.sharedEngineData.isPlaying = false
-			linkData!.localEngineData = linkData!.sharedEngineData
-			linkData!.timeAtLastClick = 0
-			
-		}
-		
-		addListeners()
-		
-	}
-	
-	var isConnected: Bool {
-		get {
-			if let linkRef:ABLLinkRef = getLinkRef() {
-				return ABLLinkIsConnected(linkRef)
+	private var refreshing = true {
+		didSet {
+			if (!refreshing) {
+				DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+					self.appDelegate?.dataRefreshBlocked = self.refreshing
+				}
 			}
-			return false
-		}
-	}
-	
-	var isEnabled: Bool {
-		get {
-			if let linkRef:ABLLinkRef = getLinkRef() {
-				return ABLLinkIsEnabled(linkRef)
-			}
-			return false
-		}
-	}
-	
-	public func set(active:Bool){
-		
-		if let linkRef:ABLLinkRef = getLinkRef() {
-			
-			if (debug){ print("ABL: Active to", active) }
-			ABLLinkSetActive(linkRef, active)
-			
-		} else {
-			
-			print("ABL: Error getting ref when activating session")
-			
-		}
-		
-	}
-	
-	//MARK: - LOOP
-	public func start(){
-		
-		if (debug){
-			print("ABL: Start")
-		}
-		
-		timer.invalidate()
-		
-		timer = Timer.scheduledTimer(
-			timeInterval: timerSpeed,
-			target: self,
-			selector: #selector(update),
-			userInfo: nil,
-			repeats: true)
-	}
-	
-	public func stop(){
-		
-		if (debug){ print("ABL: Stop") }
-		
-		timer.invalidate()
-	}
-	
-	
-	//MARK: - SHUTDOWN
-	public func shutdown(){
-		
-		if (debug){ print("ABL: Shutdown") }
-		
-		stop()
-		set(active: false)
-		
-	}
-	
-	
-	//MARK: - VIEW CONTROLLER
-	
-	public func getViewController() -> UIViewController? {
-		
-		
-		if let ref:ABLLinkRef = getLinkRef() {
-			if let vc:UIViewController = ABLLinkSettingsViewController.instance(ref) as? UIViewController {
-				return vc
-			} else {
-				print("ABL: Error casting ABL vc as UIViewController")
-				return nil
-			}
-			
-		} else {
-			print("ABL: Error getting ref when getting view controller")
-			return nil
-		}
-	}
-	
-	//MARK: - BPM
-	
-	public func set(bpm:Float64){
-		
-		if (debug){
-			print("ABL: Set Bpm to", bpm)
-		}
-		
-		if (linkData != nil){
-			
-			//os_unfair_lock_lock(&lock) //iOS 10
-			OSSpinLockLock(&lock)
-			linkData!.sharedEngineData.proposeBpm = bpm
-			//os_unfair_lock_unlock(&lock) //iOS 10
-			OSSpinLockUnlock(&lock)
-			
-		} else {
-			if (debug){
-				print("ABL: LinkData invalid when trying to set BPM")
+			else {
+				self.appDelegate?.dataRefreshBlocked = self.refreshing
 			}
 		}
 	}
 	
-	
-	
-	
-	//MARK: - PRIVATE API w LISTENER ACCESS -
-	
-	//MARK: timer loop
-	internal func update() {
-		
-		// Get a copy of the current link timeline.
-		let timeline:ABLLinkTimelineRef = ABLLinkCaptureAudioTimeline(linkData!.ablLink)
-		
-		// update engine data (local func)
-		let engineData:EngineData = updateEngineData()
-		
-		
-		// The mHostTime member of the timestamp represents the time at
-		// which the buffer is delivered to the audio hardware. The output
-		// latency is the time from when the buffer is delivered to the
-		// audio hardware to when the beginning of the buffer starts
-		// reaching the output. We add those values to get the host time
-		// at which the first sample of this buffer will reach the output.
-		
-		
-		let hostTimeAtBufferBegin:UInt64 = mach_absolute_time() + UInt64(engineData.outputLatency)
-		
-		// Handle a timeline reset
-		
-		if (engineData.resetToBeatTime != INVALID_BEAT_TIME) {
-			// Reset the beat timeline so that the requested beat time
-			// occurs near the beginning of this buffer. The requested beat
-			// time may not occur exactly at the beginning of this buffer
-			// due to quantization, but it is guaranteed to occur within a
-			// quantum after the beginning of this buffer. The returned beat
-			// time is the actual beat time mapped to the beginning of this
-			// buffer, which therefore may be less than the requested beat
-			// time by up to a quantum.
-			ABLLinkRequestBeatAtTime(
-				timeline,
-				engineData.resetToBeatTime,
-				hostTimeAtBufferBegin,
-				engineData.quantum)
-		}
-		
-		
-		// Handle a tempo proposal
-		
-		if (engineData.proposeBpm != INVALID_BPM) {
-			// Propose that the new tempo takes effect at the beginning of this buffer.
-			if (debug) { print("ABL: Proposed BPM = ", engineData.proposeBpm) }
-			
-			ABLLinkSetTempo(timeline, engineData.proposeBpm, hostTimeAtBufferBegin)
-			
-		}
-		
-		ABLLinkCommitAudioTimeline(linkData!.ablLink, timeline)
-		
-		//post the current position after doing the updates
-		
-		if (debug){
-			print("ABL: curr beat", getBeat())
-		}
-		
+	override func viewDidLoad() {
+		super.viewDidLoad()
+		XHL.libXHW().addCallBackEnumerate(self)
+		XHL.libXHW().addCallBackHotPlug(self)
+		tableView.rowHeight = UITableViewAutomaticDimension
+		tableView.estimatedRowHeight = 140
+		appDelegate = UIApplication.shared.delegate as? AppDelegate
+		projectNameList = appDelegate!.projectManager.listProjectFile()
+		appDelegate?.projectManager.projectManagerDelegateArray.append(self)
 	}
 	
-	//MARK: Route change
-	internal func handleRouteChange(){
-		
-		if (debug){
-			print("ABL: route change")
-		}
-		
-		if (linkData != nil){
-			
-			let outputLatency:UInt32 = UInt32((linkData?.secondsToHostTime)! * AVAudioSession.sharedInstance().outputLatency)
-			
-			OSSpinLockLock(&lock)
-			linkData?.sharedEngineData.outputLatency = outputLatency
-			OSSpinLockUnlock(&lock)
-			
-		} else {
-			if (debug){
-				print("ABL: Error accesing LinkData during route change")
-			}
-		}
+	override func didReceiveMemoryWarning() {
+		super.didReceiveMemoryWarning()
+		// Dispose of any resources that can be recreated.
 	}
 	
+	// MARK: - Table view data source
 	
-	func getIsPlaying() -> Bool {
-		
-		if (linkData != nil){
-			return linkData!.sharedEngineData.isPlaying
-		} else {
-			return false
-		}
-		
+	override func numberOfSections(in tableView: UITableView) -> Int {
+		// #warning Incomplete implementation, return the number of sections
+		return 5
 	}
 	
-	
-	
-	func set(isPlaying:Bool){
+	override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+		// #warning Incomplete implementation, return the number of rows
 		
-		if (linkData != nil){
-			
-			//os_unfair_lock_lock(&lock) //ios10
-			OSSpinLockLock(&lock)
-			
-			linkData!.sharedEngineData.isPlaying = isPlaying
-			if (isPlaying){
-				linkData!.sharedEngineData.resetToBeatTime = 0
-			}
-			OSSpinLockUnlock(&lock)
-			//os_unfair_lock_unlock(&lock) //ios10
-			
-		}
-		
-		
-	}
-	
-	
-	
-	func getBpm() -> Float64 {
-		
-		if (linkData != nil){
-			return ABLLinkGetTempo(ABLLinkCaptureAppTimeline(linkData!.ablLink))
-		} else {
+		switch section {
+		case 0:
+			return 1
+		case 1:
+			return 2
+		case 2:
+			return ((appDelegate?.arrayOfDevices.count) ?? 0) + 2
+		case 3:
+			return projectNameList.count + 1
+		case 4:
+			return 1
+		default:
 			return 0
 		}
 	}
- 
 	
-	func getBeat() -> Float64 {
-		
-		if (linkData != nil){
-			
-			return ABLLinkBeatAtTime(
-				ABLLinkCaptureAppTimeline(linkData!.ablLink),
-				mach_absolute_time(),
-				getQuantum())
-			
-		} else {
-			if (debug){
-				print("ABL: LinkData invalid when trying to get beat. Returning 0.")
+	func tableView(tableView: UITableView, heightForRowAtIndexPath indexPath: NSIndexPath) -> CGFloat {
+		let section = indexPath.section
+		switch section {
+		case 0:
+			return 166
+		default:
+			return 40
+		}
+	}
+	
+	override func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
+		if let cell = tableView.dequeueReusableCell(withIdentifier: "titleCell") as? menuTableViewCell {
+			cell.backgroundColor = MenuViewController.colorForCellUnselected
+			cell.textLabel?.textColor = defaultFontColor
+			cell.textLabel?.font = UIFont(name: "Roboto-Medium", size: 12)
+			cell.accessoryType = .none
+			cell.headerCell = true
+			cell.headerId = section
+			cell.Button.removeTarget(nil, action: nil, for: .allEvents)
+			switch (section) {
+			case 0:
+				cell.Button.isHidden = true
+				cell.Button.setImage(nil, for: .normal)
+				cell.textLabel?.text = "Logo";
+			case 1:
+				cell.Button.isHidden = true
+				cell.textLabel?.text = "Mode";
+			case 2:
+				cell.Button.isHidden = false
+				cell.textLabel?.text =  NSLocalizedString("Interfaces", comment: "");
+				cell.Button.addTarget(self, action: #selector(cellButtonClicked), for: .touchUpInside)
+				if (editingInterface) {
+					cell.Button.setImage(#imageLiteral(resourceName: "icon_menu_valid"), for: .normal)
+				} else {
+					cell.Button.setImage(#imageLiteral(resourceName: "icon_menu_edit"), for: .normal)
+				}
+			case 4:
+				cell.Button.setImage(nil, for: .normal)
+				cell.Button.isHidden = true
+				cell.textLabel?.text = "Sync"
+				break
+			default:
+				cell.Button.isHidden = false
+				cell.textLabel?.text = NSLocalizedString("My Projects", comment: "My Projects");
+				cell.Button.addTarget(self, action: #selector(cellButtonClicked), for: .touchUpInside)
+				if (editingProjects) {
+					cell.Button.setImage(#imageLiteral(resourceName: "icon_menu_valid"), for: .normal)
+				} else {
+					cell.Button.setImage(#imageLiteral(resourceName: "icon_menu_edit"), for: .normal)
+				}
 			}
+			return cell
+		}
+		return UIView()
+	}
+	
+	override func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
+		switch (section) {
+		case 0, 1:
 			return 0
+		default:
+			return 40
 		}
-		
 	}
 	
-	//not being used, "beat" in Position is being calculated with the getBeat
-	//v 2.1.2
-	func getPhase() -> Float64 {
+	
+	override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
 		
-		if (linkData != nil){
-			
-			return ABLLinkPhaseAtTime(
-				ABLLinkCaptureAppTimeline(linkData!.ablLink),
-				mach_absolute_time(),
-				getQuantum())
-			
-		} else {
-			if (debug){
-				print("ABL: LinkData invalid when trying to get phase. Returning 0.")
+		let section = indexPath.section
+		let row = indexPath.row
+		switch section {
+		case 0:
+			if let cell = tableView.dequeueReusableCell(withIdentifier: "imageCell") {
+				cell.backgroundColor = MenuViewController.colorForCellUnselected
+				cell.accessoryType = .none
+				cell.accessoryView = nil
+				cell.imageView?.tintColor = defaultFontColor
+				cell.imageView?.contentMode = .center
+				
+				return cell
 			}
-			return 0
-		}
-		
-	}
-	
-	
-	func getQuantum() -> Float64 {
-		
-		if (linkData != nil){
-			return linkData!.sharedEngineData.quantum
-		} else {
-			if (debug){
-				print("ABL: LinkData invalid when trying to get quantum. Returning default.")
+		case 1:
+			if let cell = tableView.dequeueReusableCell(withIdentifier: "basicCell") as? menuTableViewCell {
+				cell.backgroundColor = MenuViewController.colorForCellUnselected
+				cell.accessoryView = nil
+				cell.accessoryType = .none
+				cell.textLabel?.textColor = defaultFontColor
+				cell.textLabel?.font = defaultFont
+				cell.imageView?.tintColor = defaultFontColor
+				cell.imageView?.contentMode = .center
+				cell.Button.removeTarget(nil, action: nil, for: .allEvents)
+				cell.Button.isHidden = true
+				if (row == selectedViewId)
+				{
+					cell.backgroundColor = MenuViewController.colorForCellSelected
+					cell.textLabel?.textColor = .white
+					cell.imageView?.tintColor = .white
+				}
+				switch row {
+				case 0 :
+					cell.textLabel?.text = "Live"
+					cell.imageView?.image = UIImage(named: "icon_menu_live")
+					
+				default :
+					cell.textLabel?.text = NSLocalizedString("Fixtures", comment: "Settings Screen Name")
+					cell.imageView?.image = UIImage(named: "icon_menu_fixture")
+					cell.textLabel?.accessibilityIdentifier = "Fixtures"
+				}
+				return cell
 			}
-			return QUANTUM_DEFAULT
+		case 2:
+			if let cell = tableView.dequeueReusableCell(withIdentifier: "basicCell") as? menuTableViewCell {
+				cell.backgroundColor = MenuViewController.colorForCellUnselected
+				cell.textLabel?.textColor = defaultFontColor
+				cell.imageView?.tintColor = defaultFontColor
+				cell.imageView?.contentMode = .center
+				cell.accessoryView = nil
+				cell.Button.removeTarget(nil, action: nil, for: .allEvents)
+				cell.Button.isHidden = true
+				if (row < appDelegate?.arrayOfDevices.count ?? 0){
+					if let device = appDelegate?.arrayOfDevices[row] {
+						cell.textLabel?.text = device.getDeviceName()
+						if (device.getInterface(XHL_IT_VirtualArtNet) as? XHL_VirtualArtNetInterface) != nil {
+							if (editingInterface) {
+								cell.Button.isHidden = false
+								cell.Button.setImage(#imageLiteral(resourceName: "icon_menu_edit"), for: .normal)
+								cell.Button.addTarget(self, action: #selector(cellButtonClicked), for: .touchUpInside)
+							}
+							cell.imageView?.image = #imageLiteral(resourceName: "icon_menu_artnet")
+						}
+						else {
+							cell.imageView?.image = UIImage(named: "icon_menu_interface")
+						}
+						if (device.isOpen() == true)
+						{
+							cell.backgroundColor = MenuViewController.colorForCellSelected
+							cell.accessoryType = .checkmark
+							cell.tintColor = .cyan
+							cell.imageView?.tintColor = .white
+						}
+						else {
+							cell.accessoryType = .none
+						}
+					}
+				}
+				else if (row == appDelegate?.arrayOfDevices.count) {
+					cell.imageView?.image = UIImage(named: "icon_menu_refresh")
+					if (refreshing == true) {
+						cell.textLabel?.text = NSLocalizedString("Loading...", comment: "Menu Loading")
+						cell.imageView?.startRotating()
+					}
+					else {
+						cell.textLabel?.text = NSLocalizedString("Refresh...", comment: "Menu Refresh")
+						cell.imageView?.stopRotating()
+					}
+				}
+				else {
+					cell.textLabel?.text = NSLocalizedString("Create a Virtual Device", comment: "Menu Create a Virtual Device")
+					cell.imageView?.image = UIImage(named: "icon_menu_add")
+				}
+				return cell
+			}
+		case 3:
+			if let cell = tableView.dequeueReusableCell(withIdentifier: "basicCell") as? menuTableViewCell {
+				cell.imageView?.contentMode = .center
+				cell.accessoryView = nil
+				cell.accessoryType = .none
+				cell.backgroundColor = MenuViewController.colorForCellUnselected
+				cell.textLabel?.textColor = defaultFontColor
+				cell.textLabel?.font = defaultFont
+				cell.imageView?.tintColor = defaultFontColor
+				cell.Button.removeTarget(nil, action: nil, for: .allEvents)
+				cell.Button.isHidden = true
+				if (row == projectNameList.count) {
+					cell.textLabel?.text = NSLocalizedString("Create a Project", comment: "Menu Create a Project")
+					cell.imageView?.image = UIImage(named: "icon_menu_add")
+				}
+				else {
+					if (appDelegate!.CURRENT_PROJECT_NAME == projectNameList[row]) {
+						cell.backgroundColor = MenuViewController.colorForCellSelected
+						cell.textLabel?.textColor = .white
+						cell.imageView?.tintColor = .white
+					}
+					cell.textLabel?.text = projectNameList[row]
+					cell.imageView?.image = UIImage(named: "icon_menu_project")
+					if (editingProjects)
+					{
+						cell.Button.isHidden = false
+						cell.Button.setImage(#imageLiteral(resourceName: "icon_menu_edit"), for: .normal)
+						cell.Button.addTarget(self, action: #selector(cellButtonClicked), for: .touchUpInside)
+					}
+				}
+				return cell
+			}
+		case 4:
+			if let cell = tableView.dequeueReusableCell(withIdentifier: "detailCell") {
+				
+				cell.backgroundColor = MenuViewController.colorForCellUnselected
+				cell.accessoryView = nil
+				cell.accessoryType = .none
+				cell.textLabel?.textColor = defaultFontColor
+				cell.textLabel?.font = defaultFont
+				cell.imageView?.tintColor = defaultFontColor
+				cell.imageView?.image = nil
+				switch row {
+				case 0 :
+					cell.textLabel?.text = "Ableton Link"
+					cell.detailTextLabel?.text = (AbletonLinkWrapper.sharedInstance.isEnabled) ? "Enabled" : "Disabled"
+					break
+				default :
+					break
+				}
+				return cell
+			}
+		default:
+			if let cell = tableView.dequeueReusableCell(withIdentifier: "detailCell") {
+				cell.accessoryView = nil
+				cell.imageView?.tintColor = defaultFontColor
+				return cell
+			}
+		}
+		return UITableViewCell()
+	}
+	
+	override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+		
+		let row = indexPath.row
+		let section = indexPath.section
+		//super.tableView(tableView, didSelectRowAt: indexPath)
+		switch section  {
+		case 1:
+			if let controller = self.slideMenuController()?.mainViewController as? UINavigationController {
+				selectedViewId = row
+				switch row {
+				case 0:
+					if (controller.topViewController is FixtureSettingsViewController)
+					{
+						controller.popToRootViewController(animated: true)
+						self.slideMenuController()?.closeLeft()
+					}
+				case 1:
+					if (controller.topViewController is LiveViewController)
+					{
+						controller.topViewController?.performSegue(withIdentifier: "showSettings", sender: controller.topViewController)
+						self.slideMenuController()?.closeLeft()
+					}
+				default:
+					break
+				}
+			}
+		case 2:
+			if (row == appDelegate?.arrayOfDevices.count) {
+				if (!refreshing) {
+					self.appDelegate?.arrayOfDevices.removeAll()
+					self.refreshing = true
+					self.tableView.reloadData()
+					DispatchQueue(label: "enumate").async {
+						_ = XHL.libXHW().enumerate(true, FirmwareTooRecent: true, WrongDongle: true)
+					}
+				}
+			}
+			else if (row == appDelegate!.arrayOfDevices.count + 1) {
+				openVirtualDeviceModal()
+			}
+			else {
+				if let device = appDelegate?.arrayOfDevices[row] {
+					if (device.isOpen() == true)
+					{
+						#if DEBUG
+							print("Close Device Connection")
+						#else
+							Answers.logCustomEvent(withName: "Close Device Connection",
+							                       customAttributes: ["Device Name" : device.getDeviceName() ?? "Device",
+							                                          "Device Type": device.getDeviceTypeName()])
+						#endif
+						device.close()
+					} else {
+						#if DEBUG
+							print("Open Device Connection")
+						#else
+							Answers.logCustomEvent(withName: "Open Device Connection",
+							                       customAttributes: ["Device Name" : device.getDeviceName() ?? "Device",
+							                                          "Device Type": device.getDeviceTypeName()])
+						#endif
+						
+						if (device.open() == false) {
+							let error = XHL.libXHW().getLastErrorDescription()
+							#if DEBUG
+								print("Error During Device Connection")
+							#else
+								Answers.logCustomEvent(withName: "Error During Device Connection",
+								                       customAttributes: ["Device Name" : device.getDeviceName() ?? "Device",
+								                                          "Device Type": device.getDeviceTypeName(),
+								                                          "Error" : error])
+							#endif
+							
+							if (error == "[XHL]The devices firmware is too old: update the device firmware") {
+								errorPopUp(title: NSLocalizedString("Error : Firmware Too Old", comment: "PopUp Error Firmware too Old Title"), message:  NSLocalizedString("Please update your devices firmware using the hardware manager available from our website.", comment: "PopUp Error Firmware too Old Message"))
+							}
+							else {
+								errorPopUp(title: NSLocalizedString("Error", comment: "Basic Error Opop Title"), message:  NSLocalizedString("Could Not open device : Unknown Error", comment: "Basic Error popup message device connection"))
+							}
+						}
+					}
+				}
+				self.tableView.reloadData()
+			}
+		case 3:
+			if (row == projectNameList.count) {
+				openNewProjectModal()
+				self.tableView.deselectRow(at: indexPath, animated: true)
+			}
+			else {
+				self.appDelegate?.projectManager.loadProjectFile(projectNameList[row])
+			}
+		case 4:
+			switch row {
+			case 0:
+				let link = AbletonLinkWrapper.sharedInstance
+				if let vc = link.getViewController() {
+					if let controller = self.slideMenuController()?.mainViewController as? UINavigationController {
+						controller.setNavigationBarHidden(false, animated: false)
+						controller.pushViewController(vc, animated: true)
+						self.slideMenuController()?.closeLeft()
+					}
+				}
+			default:
+				break
+			}
+		default:
+			#if DEBUG
+				let alert = UIAlertController(title: "SET DEV IP 3D", message: "DEBUG ONLY", preferredStyle: UIAlertControllerStyle.alert)
+				alert.addTextField { (textField) in
+					textField.text = self.appDelegate?.devIp
+				}
+				alert.addAction(UIAlertAction(title: NSLocalizedString("Change", comment: ""), style: .cancel, handler: { [weak alert] (_) in
+					self.appDelegate?.setDevIP(ip: alert?.textFields?[0].text ?? "192.168.1.1")
+				}))
+				
+				alert.addAction(UIAlertAction(title: NSLocalizedString("Cancel", comment: ""), style: .default, handler: nil))
+				self.present(alert, animated: true, completion: nil)
+				
+			#endif
+			break
 		}
 		
 	}
 	
+	override func tableView(_ tableView: UITableView, didDeselectRowAt indexPath: IndexPath) {
+		let cellToDeSelect:UITableViewCell = tableView.cellForRow(at: indexPath)!
+		cellToDeSelect.contentView.backgroundColor = MenuViewController.colorForCellUnselected
+	}
 	
-	func setQuantum(quantum:Float64) {
+	func cellButtonClicked(sender: UIButton) {
+		if let cell = sender.superview?.superview as? menuTableViewCell {
+			if cell.headerCell {
+				switch cell.headerId {
+				case 2:
+					self.editingInterface = !self.editingInterface
+					self.tableView.reloadData()
+				case 3:
+					self.editingProjects = !self.editingProjects
+					self.tableView.reloadData()
+				default:
+					return
+				}
+			} else if let path = self.tableView.indexPath(for: cell) {
+				var message = ""
+				if (path.section == 2) {
+					message = NSLocalizedString("Edit your Virtual Interface :", comment: "in menu, when user want to delete or rename interface")
+				} else {
+					message = NSLocalizedString("Edit your Project :", comment: "in menu, when user want to delete or rename project")
+				}
+				let optionMenu = UIAlertController(title: message, message: nil, preferredStyle: UIAlertControllerStyle.actionSheet)
+				selectedItemToEdit = path.row
+				let EditTitle = NSLocalizedString("Edit", comment: "")
+				let option1 = UIAlertAction(title: ((path.section == 2) ? EditTitle : NSLocalizedString("Rename", comment: "")), style: .default, handler: {
+					
+					(alert: UIAlertAction!) -> Void in
+					if (path.section == 2) {
+						self.editInterface()
+					}
+					if (path.section == 3) {
+						self.renameProject()
+					}
+				})
+				
+				let option2 = UIAlertAction(title: NSLocalizedString("DELETE", comment: ""), style: .destructive, handler: {
+					
+					(alert: UIAlertAction!) -> Void in
+					if (path.section == 2) {
+						
+						self.openDeleteInterfaceModal()
+					}
+					if (path.section == 3) {
+						
+						self.openDeleteProjectModal()
+					}
+					
+				})
+				
+				optionMenu.addAction(option1)
+				optionMenu.addAction(option2)
+				
+				if let currentPopoverpresentioncontroller = optionMenu.popoverPresentationController{
+					currentPopoverpresentioncontroller.sourceView = cell.Button
+					currentPopoverpresentioncontroller.sourceRect = cell.Button.bounds
+					currentPopoverpresentioncontroller.permittedArrowDirections = UIPopoverArrowDirection.left
+					self.present(optionMenu, animated: true, completion: nil)
+				} else {
+					print("no Path")
+				}
+			}
+		}
+	}
+	
+	func openNewProjectModal() {
+		let alert = UIAlertController(title: NSLocalizedString("New Project", comment: ""), message: NSLocalizedString("Name Your Project", comment: ""), preferredStyle: .alert)
 		
-		if (linkData != nil){
+		alert.addTextField { (textField) in
+			textField.text = "MyProject"
+		}
+		
+		alert.addAction(UIAlertAction(title: NSLocalizedString("Keep current fixtures", comment: ""), style: .default, handler: { [weak alert] (_) in
+			self.openKeepPresetsModal(keepFixtures: true, newProjectAlert: alert!)
+		}))
+		
+		
+		alert.addAction(UIAlertAction(title: NSLocalizedString("Do not keep current fixtures", comment: ""), style: .default, handler: { [weak alert] (_) in
+			self.openKeepPresetsModal(keepFixtures: false, newProjectAlert: alert!)
+		}))
+		
+		alert.addAction(UIAlertAction(title: NSLocalizedString("Cancel", comment: ""), style: .cancel, handler: nil))
+		
+		self.present(alert, animated: true, completion: nil)
+	}
+	
+	func openKeepPresetsModal(keepFixtures: Bool, newProjectAlert: UIAlertController) {
+		let alert = UIAlertController(title: NSLocalizedString("Keep Presets", comment: ""), message: NSLocalizedString("Would you like to keep the current presets?", comment: ""), preferredStyle: .alert)
+		
+		alert.addAction(UIAlertAction(title: NSLocalizedString("Keep current presets", comment: ""), style: .default, handler: {(_) in
+			self.createNewProject(alert: newProjectAlert, keepFixtures: keepFixtures, keepPresets: true)
+		}))
+		
+		
+		alert.addAction(UIAlertAction(title: NSLocalizedString("Do not keep current presets", comment: ""), style: .default, handler: {(_) in
+			self.createNewProject(alert: newProjectAlert, keepFixtures: keepFixtures, keepPresets: false)
+		}))
+		
+		alert.addAction(UIAlertAction(title: NSLocalizedString("Cancel", comment: ""), style: .cancel, handler: nil))
+		
+		self.present(alert, animated: true, completion: nil)
+	}
+	
+	func createNewProject(alert: UIAlertController, keepFixtures: Bool, keepPresets: Bool){
+		let textField = alert.textFields![0]
+		if (textField.text != ""){
+			if(!projectNameList.contains(textField.text!)){
+				if(!keepFixtures){
+					appDelegate?.mColorEffect.mListControllers.removeAll()
+					appDelegate?.mMoveEffect.mListControllers.removeAll()
+					for fixture in Fixture.getFixtures(){
+						for controller in fixture.getControllers(){
+							controller.setValue(0)
+						}
+						for channel in fixture.getListChannel(){
+							channel.setValue(value: 0)
+						}
+					}
+					
+					for theFixture in Fixture.getFixtures(){
+						theFixture.delete()
+					}
+				}
+				
+				ProjectManager.keepPresets = keepPresets
+				_ = self.appDelegate?.projectManager.createProjectFile((textField.text)!)
+				self.appDelegate?.projectManager.openedProject = textField.text!
+				self.appDelegate?.projectManager.saveProjectFile()
+				self.projectNameList = self.appDelegate!.projectManager.listProjectFile()
+				self.tableView.reloadData()
+			} else{
+				newProjectNameError(errorText: "Project already exists!")
+			}
+		} else{
+			newProjectNameError(errorText: "Please enter a project name!")
+		}
+	}
+	
+	func renameProject() {
+		let project = projectNameList[selectedItemToEdit]
+		let alert = UIAlertController(title: NSLocalizedString("Rename ", comment: "") + project, message: NSLocalizedString("Rename Your Project", comment: ""), preferredStyle: .alert)
+		
+		alert.addTextField { (textField) in
+			textField.text = project
+		}
+		
+		alert.addAction(UIAlertAction(title: NSLocalizedString("OK", comment: ""), style: .default, handler: { [weak alert] (_) in
 			
-			OSSpinLockLock(&lock)
-			//os_unfair_lock_lock(&lock) //ios10
-			linkData!.sharedEngineData.quantum = quantum
-			OSSpinLockUnlock(&lock) //ios10
-			//os_unfair_lock_unlock(&lock)
+			let appFolder: File = AppFile().createProjectFolder(NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true)[0] + "/DJApp")
+			
+			let fileToRename: File = File(pathName: appFolder.getPath() + "/" + (project) + ".dlm")
+			let newName = alert?.textFields?[0].text ?? "My Project"
+			if (fileToRename.rename(newName + ".dlm")) {
+				if (project == self.appDelegate?.CURRENT_PROJECT_NAME) {
+					self.appDelegate?.CURRENT_PROJECT_NAME = newName
+					ProjectManager.writeLatestProjectName(latestProjectName: newName)
+				}
+				self.projectNameList = self.appDelegate?.projectManager.listProjectFile() ?? [String]()
+				self.tableView.reloadData()
+			}
+		}))
+		alert.addAction(UIAlertAction(title: NSLocalizedString("Cancel", comment: ""), style: .cancel, handler: nil))
+		self.present(alert, animated: true, completion: nil)
+		
+	}
+	
+	func editInterface() {
+		if let device = appDelegate?.arrayOfDevices[selectedItemToEdit] {
+			if (device.getInterface(XHL_IT_VirtualArtNet) as? XHL_VirtualArtNetInterface) != nil {
+				let defaults = UserDefaults.standard
+				var devices: [StoredVirtualDevice] = []
+				let deviceData: Data = (defaults.object(forKey: "VirtualDevices") as? Data)!
+				
+				let devices2 = NSKeyedUnarchiver.unarchiveObject(with: deviceData) as? [Any]
+				for device in devices2!{
+					if let aDevice: StoredVirtualDevice = device as? StoredVirtualDevice{
+						devices.append(aDevice)
+					}
+				}
+				
+				if(devices.count > 0){
+					for i in 0..<devices.count{
+						currentStoredDevice = devices[i]
+						if(currentStoredDevice.interfaceName == device.getDeviceName()){
+							self.openVirtualDeviceModal(editInstead: true)
+							return
+						}
+					}
+				}
+			}
+		}
+	}
+	
+	
+	func openVirtualDeviceModal(editInstead: Bool = false)
+	{
+		let alert = UIAlertController(title: NSLocalizedString((editInstead ? "Edit Virtual Device" : "Create Virtual Device"), comment: ""), message: "", preferredStyle: .alert)
+		
+		let name = currentStoredDevice.interfaceName
+		let ipAddress = String((currentStoredDevice.ipAddressArray[0])) + "." + (currentStoredDevice.ipAddressArray[1]) + "." +  String((currentStoredDevice.ipAddressArray[2])) + "."  + String((currentStoredDevice.ipAddressArray[3]))
+		let networkMask = "\(currentStoredDevice.networkMaskArray[0]).\(currentStoredDevice.networkMaskArray[1]).\(currentStoredDevice.networkMaskArray[2]).\(currentStoredDevice.networkMaskArray[3])"
+		
+		alert.addTextField { (textField) in
+			textField.keyboardType = .asciiCapable
+			//textField.borderStyle = .roundedRect
+			textField.placeholder = NSLocalizedString("Device Name", comment: "")
+			textField.text = name
+		}
+		
+		alert.addTextField { (textField) in
+			textField.delegate = self
+			textField.keyboardType = .numberPad
+			textField.placeholder = NSLocalizedString("IP Address", comment: "")
+			//textField.borderStyle = .roundedRect
+			textField.background = nil
+			textField.backgroundColor = UIColor.clear
+			textField.text = ipAddress
 			
 		}
+		
+		alert.addTextField { (textField) in
+			// textField.delegate = self
+			textField.keyboardType = .numberPad
+			//textField.borderStyle = .roundedRect
+			textField.placeholder = NSLocalizedString("Network Mask", comment: "")
+			textField.text = networkMask
+			textField.delegate = self
+		}
+		
+		alert.addTextField { (textField) in
+			textField.keyboardType = .numberPad
+			//textField.borderStyle = .roundedRect
+			textField.placeholder = NSLocalizedString("Art-Net Port", comment: "")
+			textField.delegate = self
+			textField.text = self.currentStoredDevice.artNetPort
+		}
+		
+		
+		alert.addAction(UIAlertAction(title: NSLocalizedString((editInstead ? "Edit" : "Create"), comment: ""), style: .cancel, handler: { [weak alert] (_) in
+			self.validateVirtualDevice(alert: alert!, editInstead: editInstead)
+		}))
+		
+		alert.modalPresentationStyle = .formSheet
+		alert.addAction(UIAlertAction(title: NSLocalizedString("Cancel", comment: ""), style: .default, handler: nil))
+		
+		self.present(alert, animated: true, completion: nil)
 		
 	}
 	
 	
 	
-	//MARK: Link ref
-	//this is a ref to the abLink system
-	//accessed internally during init and by outside classes
-	func getLinkRef() -> ABLLinkRef? {
+	func deviceNameExists(deviceName: String) -> Bool{
+		let defaults = UserDefaults.standard
+		var devices: [StoredVirtualDevice] = []
+		if let deviceData = defaults.object(forKey: "VirtualDevices") as? Data {
+			if let devices2 = NSKeyedUnarchiver.unarchiveObject(with: deviceData) as? [Any]{
+				if(devices2.count > 0){
+					for device in devices2{
+						if let aDevice: StoredVirtualDevice = device as? StoredVirtualDevice{
+							devices.append(aDevice)
+						}
+					}
+				}
+			}
+		}
 		
-		if (linkData != nil){
-			return linkData!.ablLink
+		for device in devices{
+			if(device.interfaceName == deviceName){
+				return true
+			}
+		}
+		
+		return false
+	}
+	
+	func validateVirtualDevice(alert: UIAlertController, editInstead: Bool = false){
+		ipAddressArray = []
+		networkMaskArray = []
+		
+		interfaceName = alert.textFields![0].text!
+		var ipAddress = alert.textFields![1].text!
+		var networkMask = alert.textFields![2].text!
+		artNetPort = alert.textFields![3].text!
+		
+		if(deviceNameExists(deviceName: interfaceName)){
+			if (!editInstead || appDelegate?.arrayOfDevices[selectedItemToEdit].getDeviceName() != interfaceName) {
+				virtualDeviceErrorAlert(virtualDeviceAlert: alert, errorTitle: NSLocalizedString("Device Name Already Exists!", comment: ""), errorMessage: NSLocalizedString("Please enter an alternative name", comment: ""))
+				return
+			}
+		}
+		
+		for _ in 0...2{
+			
+			if (ipAddress.contains(".")){
+				if (networkMask.contains(".")){
+					var start = ipAddress.startIndex
+					var end = ipAddress.indexOf(".")
+					var endWithOffset = ipAddress.index(end!, offsetBy: 1)
+					ipAddressArray.append((ipAddress.substring(with: start..<end!)))
+					ipAddress.removeSubrange(start..<endWithOffset)
+					start = networkMask.startIndex
+					end = networkMask.indexOf(".")
+					endWithOffset = networkMask.index(end!, offsetBy: 1)
+					networkMaskArray.append((networkMask.substring(with: start..<end!)))
+					networkMask.removeSubrange(start..<endWithOffset)
+				} else{
+					virtualDeviceErrorAlert(virtualDeviceAlert: alert, errorTitle: NSLocalizedString("Incorrect Network Mask format!", comment: ""), errorMessage: NSLocalizedString("Please enter Network Mask in the correct format", comment: ""))
+					return
+				}
+			} else{
+				virtualDeviceErrorAlert(virtualDeviceAlert: alert, errorTitle: NSLocalizedString("Incorrect IP Address format!", comment: ""), errorMessage: NSLocalizedString("Please enter IP Address in the correct format", comment: ""))
+				return
+			}
+			
+		}
+		
+		ipAddressArray.append(ipAddress)
+		networkMaskArray.append(networkMask)
+		
+		for field in ipAddressArray{
+			if(Int(field)! < 0 || Int(field)! > 255){
+				virtualDeviceErrorAlert(virtualDeviceAlert: alert, errorTitle: NSLocalizedString("Incorrect IP Address format!", comment: ""), errorMessage: NSLocalizedString("Values should be between 0 and 255", comment: ""))
+				return
+			}
+		}
+		
+		for field in networkMaskArray{
+			if(Int(field)! < 0 || Int(field)! > 255){
+				virtualDeviceErrorAlert(virtualDeviceAlert: alert, errorTitle: NSLocalizedString("Incorrect Network Mask format!", comment: ""), errorMessage: NSLocalizedString("Values should be between 0 and 255", comment: ""))
+				return
+			}
+		}
+		
+		if(artNetPort.characters.count == 0){
+			virtualDeviceErrorAlert(virtualDeviceAlert: alert, errorTitle: NSLocalizedString("Incorrect Art-Net Port", comment: ""), errorMessage: NSLocalizedString("Please enter an Art Net port", comment: ""))
+			return
+		}
+		
+		if(Int(artNetPort) == nil){
+			virtualDeviceErrorAlert(virtualDeviceAlert: alert, errorTitle: NSLocalizedString("Incorrect Art-Net Port", comment: ""), errorMessage: NSLocalizedString("Art Net port must be an integer", comment: ""))
+			return
+		}
+		
+		if(Int(artNetPort)! >= 0 && Int(artNetPort)! <= 32767){
+		} else{
+			virtualDeviceErrorAlert(virtualDeviceAlert: alert, errorTitle: NSLocalizedString("Incorrect Art-Net Port", comment: ""), errorMessage: NSLocalizedString("Please enter an art net port within the range 0 - 32,767", comment: ""))
+			return
+		}
+		
+		let defaults = UserDefaults.standard
+		var devices: [StoredVirtualDevice] = []
+		if let deviceData  = defaults.object(forKey: "VirtualDevices") as? Data{
+			if let newDevices = NSKeyedUnarchiver.unarchiveObject(with: deviceData)  as? [StoredVirtualDevice] {
+				devices = newDevices
+			}
+		}
+		
+		if (editInstead) {
+			editVirtualDevice(ipAddressArray: ipAddressArray, networkMaskArray: networkMaskArray, artNetPort: artNetPort, interfaceName: interfaceName)
 		} else {
-			if (debug) { print("ABL: No link ref available during getLinkRef") }
-			return nil
+			
+			if(devices.count > 0){
+				for i in 0..<devices.count{
+					if (devices[i].ipAddressArray[0] == ipAddressArray[0] &&
+						devices[i].ipAddressArray[1] == ipAddressArray[1] &&
+						devices[i].ipAddressArray[2] == ipAddressArray[2] &&
+						devices[i].ipAddressArray[3] == ipAddressArray[3]) {
+						virtualDeviceErrorAlert(virtualDeviceAlert: alert, errorTitle: NSLocalizedString("IP Address In Use", comment: ""), errorMessage: NSLocalizedString("IP Address already in use. Please select another.", comment: ""))
+						return
+					}
+				}
+			}
+			createVirtualDevice(ipAddressArray: ipAddressArray, networkMaskArray: networkMaskArray)
+		}
+	}
+	
+	func editVirtualDevice(ipAddressArray: [String], networkMaskArray: [String], artNetPort: String, interfaceName: String) {
+		if let device = self.appDelegate?.arrayOfDevices[self.selectedItemToEdit] {
+			let defaults = UserDefaults.standard
+			let deviceData: Data = (defaults.object(forKey: "VirtualDevices") as? Data)!
+			let devices = NSKeyedUnarchiver.unarchiveObject(with: deviceData) as? [Any]
+			if let theDeviceArray: [StoredVirtualDevice] = devices as? [StoredVirtualDevice]{
+				var i = 0
+				for device in theDeviceArray{
+					if device.interfaceName == currentStoredDevice.interfaceName{
+						theDeviceArray[i].ipAddressArray = ipAddressArray
+						theDeviceArray[i].networkMaskArray = networkMaskArray
+						theDeviceArray[i].interfaceName = interfaceName
+						theDeviceArray[i].artNetPort = artNetPort
+						currentStoredDevice = theDeviceArray[i]
+					}
+					i+=1
+				}
+				let encodedDeviceData: Data = NSKeyedArchiver.archivedData(withRootObject: theDeviceArray)
+				defaults.set(encodedDeviceData, forKey: "VirtualDevices")
+				defaults.synchronize()
+				
+				
+				let ethernetInterface: XHL_EthernetInterface = device.getInterface(XHL_IT_Ethernet)! as! XHL_EthernetInterface
+				let ipAddress = XHL_HostAddress(ip0: UInt(ipAddressArray[0]) ?? 192, ip1: UInt(ipAddressArray[1]) ?? 168, ip2: UInt(ipAddressArray[2]) ?? 0, ip3: UInt(ipAddressArray[3]) ?? 0)
+				let networkMask = XHL_HostAddress(ip0: UInt(networkMaskArray[0]) ?? 192, ip1: UInt(networkMaskArray[1]) ?? 168, ip2: UInt(networkMaskArray[2]) ?? 0, ip3: UInt(networkMaskArray[3]) ?? 0)
+				
+				let artNetInterface: XHL_ArtNetInterface = device.getInterface(XHL_IT_ArtNet)! as! XHL_ArtNetInterface
+				_ = artNetInterface.setLongName(aName: interfaceName)
+				_ = artNetInterface.setShortName(aName: interfaceName)
+				
+				// gateway is irrelevant for art net
+				_ = ethernetInterface.setIpConf(hasEthernetEnabled: true, hasDhcpEnable: true, addressHandle: ipAddress, maskHandle: networkMask, gatewayHandle: networkMask)
+				tableView.reloadData()
+				refreshXHLDevices()
+				
+			}
+			
+		}
+	}
+	
+	func createVirtualDevice(ipAddressArray: [String], networkMaskArray: [String]){
+		
+		let busConfiguration = XHL.libXHW().getBusConfiguration(XHL_BT_Artnet)
+		if let artNetBus = busConfiguration as? XHL_ArtNetBusConfiguration {
+			let host = XHL_HostAddress(ip0: UInt(ipAddressArray[0]) ?? 192, ip1: UInt(ipAddressArray[1]) ?? 168, ip2: UInt(ipAddressArray[2])  ?? 0, ip3: UInt(ipAddressArray[3]) ?? 0)
+			let network = XHL_HostAddress(ip0: UInt(networkMaskArray[0]) ?? 255, ip1: UInt(networkMaskArray[1]) ?? 255, ip2: UInt(networkMaskArray[2])  ?? 0, ip3: UInt(networkMaskArray[3]) ?? 0)
+			
+			let device = artNetBus.addVirtualDevice(aAddress: host, aNetworkMask: network)
+			if let interface = device.getInterface(XHL_IT_VirtualArtNet) as? XHL_VirtualArtNetInterface {
+				
+				if (interface.addNewPort(type: DMX512Type, input: false, portInAddress: 0, output: true, portOutAddress: UInt(artNetPort ) ?? 0) != 0) {
+					
+					Answers.logCustomEvent(withName: "Create A Virtual Device",
+					                       customAttributes: [:])
+				}
+				
+				_ = interface.setShortName(aName: interfaceName )
+				_ = device.open()
+				if (!refreshing) {
+					self.appDelegate?.arrayOfDevices.removeAll()
+					self.refreshing = true
+					self.tableView.reloadData()
+					DispatchQueue(label: "enumate").async {
+						_ = XHL.libXHW().enumerate(true, FirmwareTooRecent: true, WrongDongle: true)
+					}
+				}
+				storeVirtualDevice()
+			}
 		}
 		
 	}
 	
-	//MARK: add listeners
-	fileprivate func addListeners(){
+	func virtualDeviceErrorAlert(virtualDeviceAlert: UIAlertController, errorTitle: String, errorMessage: String){
+		let alert = UIAlertController(title: errorTitle, message: errorMessage, preferredStyle: .alert)
+		alert.addAction(UIAlertAction(title: NSLocalizedString("OK", comment: ""), style: .default, handler:  { (complete) in
+			self.openVirtualDeviceModal()
+		}))
+		self.present(alert, animated: true, completion: nil)
+	}
+	
+	
+	func newProjectNameError(errorText: String){
+		let alert = UIAlertController(title: NSLocalizedString(errorText, comment: ""), message: "", preferredStyle: .alert)
+		alert.addAction(UIAlertAction(title: NSLocalizedString("OK", comment: ""), style: .default, handler:  { (complete) in
+			self.openNewProjectModal()
+		}))
+		self.present(alert, animated: true, completion: nil)
+	}
+	
+	func errorPopUpCreateVirtualDevice(title: String, message : String) {
+		let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+		alert.addAction(UIAlertAction(title: NSLocalizedString("OK", comment: ""), style: .cancel, handler: {
+			void in
+			self.openVirtualDeviceModal()
+		}))
+		self.present(alert, animated: true, completion: nil)
+	}
+	
+	func errorPopUp(title: String, message : String) {
+		let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+		alert.addAction(UIAlertAction(title: NSLocalizedString("OK", comment: ""), style: .cancel, handler: nil))
+		self.present(alert, animated: true, completion: nil)
+	}
+	
+	func openDeleteProjectModal() {
+		let alert = UIAlertController(title: NSLocalizedString("Delete Project", comment: "Delete PopUp"), message: String(format: NSLocalizedString("Are you sure you want to delete %@", comment: "Confirmation of deletion of project %@"), projectNameList[selectedItemToEdit]), preferredStyle: .alert)
 		
-		//route change
-		NotificationCenter.default.addObserver(
-			self, selector: #selector(handleRouteChange),
-			name: NSNotification.Name.AVAudioSessionRouteChange,
-			object: AVAudioSession.sharedInstance())
+		alert.addAction(UIAlertAction(title: NSLocalizedString("Cancel", comment: "Cancel PopUp"), style: .cancel, handler: nil))
 		
-		// Void pointer to self for C callbacks below
-		// http://stackoverflow.com/questions/33260808/swift-proper-use-of-cfnotificationcenteraddobserver-w-callback
-		let selfAsURP = UnsafeRawPointer(Unmanaged.passUnretained(self).toOpaque())
-		let selfAsUMRP = UnsafeMutableRawPointer(mutating:selfAsURP)
-		
-		
-		if let ref:ABLLinkRef = getLinkRef() {
+		alert.addAction(UIAlertAction(title: NSLocalizedString("DELETE", comment: "Confirm Deletion PopUp"), style: .destructive, handler: { void in
+			_ = self.appDelegate?.projectManager.deleteProjectFile(fileName: self.projectNameList[self.selectedItemToEdit])
+			self.projectNameList.remove(at: self.selectedItemToEdit)
+			self.tableView.reloadData()
+		}))
+		self.present(alert, animated: true, completion: nil)
+	}
+	
+	func openDeleteInterfaceModal() {
+		if let device = self.appDelegate?.arrayOfDevices[self.selectedItemToEdit] {
+			let alert = UIAlertController(title: NSLocalizedString("Delete Interface", comment: "Delete PopUp"), message: String(format: NSLocalizedString("Are you sure you want to delete %@", comment: "Confirmation of deletion of Interface %@"), device.getDeviceName() ?? "Device"), preferredStyle: .alert)
 			
-			//add listerner to detect tempo changes from other devices
-			/*
-			//set callback format
-			void ABLLinkSetSessionTempoCallback(
-			ABLLinkRef,
-			ABLLinkSessionTempoCallback callback,
-			void* context)
-			*/
+			alert.addAction(UIAlertAction(title: NSLocalizedString("Cancel", comment: "Cancel PopUp"), style: .cancel, handler: nil))
 			
-			ABLLinkSetSessionTempoCallback(
-				ref,
-				{ (sessionTempo, context) -> Void in
+			alert.addAction(UIAlertAction(title: NSLocalizedString("DELETE", comment: "Confirm Deletion PopUp"), style: .destructive, handler: { void in
+				let busConfiguration = XHL.libXHW().getBusConfiguration(XHL_BT_Artnet)
+				if let artNetBus = busConfiguration as? XHL_ArtNetBusConfiguration {
+					self.deleteStoredVirtualDevice(deviceName: device.getDeviceName()!)
+					self.appDelegate?.arrayOfDevices.remove(at: self.selectedItemToEdit)
+					device.removeDeviceStateChangeListener(self.appDelegate!)
+					artNetBus.removeVirtualDevice(aDevice: device)
 					
-					if let context = context {
-						let localSelf = Unmanaged<LinkWrapper>.fromOpaque(context).takeUnretainedValue()
-						let localSelfAsUMRP = UnsafeMutableRawPointer(mutating:context)
-						localSelf.onSessionTempoChanged(bpm: sessionTempo, context: localSelfAsUMRP)
-					}
-					
-					
-			},
-				selfAsUMRP
+				}
 				
-			)
-			
-			//add onLinkEnabled listener
-			
-			/*
-			//callback format:
-			ABLLinkIsEnabledCallback
-			typedef void (*ABLLinkIsEnabledCallback)(
-			bool isEnabled,
-			void *context)
-			
-			//set callback format:
-			ABLLinkSetIsEnabledCallback
-			void ABLLinkSetIsEnabledCallback(
-			ABLLinkRef,
-			ABLLinkIsEnabledCallback callback,
-			void* context)
-			*/
-			
-			ABLLinkSetIsEnabledCallback(
-				ref,
-				{ (isEnabled, context) -> Void in
-					
-					if let context = context {
-						let localSelf = Unmanaged<LinkWrapper>.fromOpaque(context).takeUnretainedValue()
-						let localSelfAsUMRP = UnsafeMutableRawPointer(mutating:context)
-						localSelf.onLinkEnabled(isEnabled: isEnabled, context: localSelfAsUMRP)
-					}
-			},
-				selfAsUMRP
-				
-			)
-			
-			ABLLinkSetIsConnectedCallback(
-				ref,
-				{ (isConnected, context) -> Void in
-					
-					if let context = context {
-						let localSelf = Unmanaged<LinkWrapper>.fromOpaque(context).takeUnretainedValue()
-						let localSelfAsUMRP = UnsafeMutableRawPointer(mutating:context)
-						localSelf.onConnectionStatusChanged(isConnected: isConnected, context: localSelfAsUMRP)
-					}
-			},
-				selfAsUMRP
-				
-			)
-			
-			
+			}))
+			self.present(alert, animated: true, completion: nil)
+		}
+	}
+	
+	func leftWillOpen() {
+		self.slideMenuController()?.addLeftGestures()
+		self.tableView.reloadData()
+	}
+	
+	func leftDidClose() {
+		self.slideMenuController()?.removeLeftGestures()
+	}
+	
+	func onBusError(_ busType: XHL_BusType, errorCode: XHL_ErrorCode){
+		
+	}
+	
+	func onDeviceFound (_ busType: XHL_BusType, supportState: XHL_SupportState, name: String, description: String) {
+		
+	}
+	
+	func deleteStoredVirtualDevice(deviceName: String){
+		let defaults: UserDefaults = UserDefaults.standard
+		var devices: [StoredVirtualDevice] = []
+		
+		let deviceData: Data = (defaults.object(forKey: "VirtualDevices") as? Data)!
+		let devices2 = NSKeyedUnarchiver.unarchiveObject(with: deviceData) as? [Any]
+		
+		for device in devices2!{
+			if let aDevice: StoredVirtualDevice = device as? StoredVirtualDevice{
+				devices.append(aDevice)
+			}
+		}
+		
+		if(devices.count > 0){
+			for i in 0..<devices.count{
+				if(devices[i].interfaceName == deviceName){
+					devices.remove(at: i)
+					break
+				}
+			}
+		}
+		
+		if devices.count != 0 {
+			let encodedDeviceData: Data = NSKeyedArchiver.archivedData(withRootObject: devices)
+			defaults.set(encodedDeviceData, forKey: "VirtualDevices")
 		} else {
-			print("ABL: Error getting linkRef when adding listeners")
+			defaults.set(nil, forKey: "VirtualDevices")
+		}
+		defaults.synchronize()
+		
+	}
+	
+	func onEndEnumerate(_ errorCode: XHL_ErrorCode?) {
+		let defaults = UserDefaults.standard
+		var devices: [StoredVirtualDevice] = []
+		if let deviceData  = defaults.object(forKey: "VirtualDevices") as? Data{
+			if let newDevices = NSKeyedUnarchiver.unarchiveObject(with: deviceData) as? [StoredVirtualDevice] {
+				devices.append(contentsOf: newDevices)
+			}
+		}
+		
+		if(firstEnumerate){
+			if(devices.count > 0){
+				for i in 0...devices.count - 1{
+					ipAddressArray = devices[i].ipAddressArray
+					networkMaskArray = devices[i].networkMaskArray
+					interfaceName = devices[i].interfaceName
+					artNetPort = devices[i].artNetPort
+					createVirtualDevice(ipAddressArray: ipAddressArray, networkMaskArray: networkMaskArray)
+				}
+			}
+			firstEnumerate = false
+		}
+		
+		appDelegate?.arrayOfDevices.removeAll()
+		
+		refreshXHLDevices()
+		
+		DispatchQueue.main.async {
+			self.refreshing = false
+			self.tableView.reloadData()
 		}
 	}
 	
-	//MARK: Tempo changes from other Link devices
-	fileprivate func onSessionTempoChanged(bpm:Double, context:Optional<UnsafeMutableRawPointer>) -> (){
-		
-		if (debug){
-			print("ABL: onSessionTempoChanged")
+	func refreshXHLDevices(){
+		appDelegate?.arrayOfDevices.removeAll()
+		if(XHL.libXHW().getDeviceCount() > 0){
+			for i in 0...(XHL.libXHW().getDeviceCount() - 1) {
+				let device = XHL.libXHW().getDevice(Int32(i))
+				
+				device.addDeviceStateChangeListener((appDelegate)!)
+				appDelegate?.arrayOfDevices.append(device)
+			}
+		}
+	}
+	
+	func storeVirtualDevice(){
+		let defaults = UserDefaults.standard
+		var devices: [StoredVirtualDevice] = []
+		if let deviceData  = defaults.object(forKey: "VirtualDevices") as? Data{
+			if let newDevices = NSKeyedUnarchiver.unarchiveObject(with: deviceData)  as? [StoredVirtualDevice] {
+				devices = newDevices
+			}
 		}
 		
-		//update local var
-		self.set(bpm: bpm)
-		
-		if (debug){
-			print("ABL: curr bpm", bpm)
+		for device in devices{
+			if device.interfaceName == interfaceName {
+				return
+			}
 		}
 		
-		delegate?.tempoDidChange(bpm: bpm, quantum: self.getQuantum())
+		let storedVirtualDevice: StoredVirtualDevice = StoredVirtualDevice(interfaceName: interfaceName, artNetPort: artNetPort, ipAddressArray: ipAddressArray, networkMaskArray: networkMaskArray)
+		devices.append(storedVirtualDevice)
+		let encodedDeviceData: Data = NSKeyedArchiver.archivedData(withRootObject: devices)
+		defaults.set(encodedDeviceData, forKey: "VirtualDevices")
+		defaults.synchronize()
+	}
+	
+	func projectHasBeenSaved() {
+		projectNameList = appDelegate!.projectManager.listProjectFile()
+		DispatchQueue.main.async {
+			self.tableView.reloadData()
+		}
+	}
+	
+	func projectFailedToSave() {
+		projectNameList = appDelegate!.projectManager.listProjectFile()
+	}
+	
+	func projectLoaded() {
+		DispatchQueue.main.async {
+			self.tableView.reloadData()
+		}
+	}
+	
+	func projectCreated() {
+		DispatchQueue.main.async {
+			self.tableView.reloadData()
+		}
+	}
+	
+	func wipOnProject() {
+	}
+	
+	func projectFailedToLoad() {
+		
+	}
+	
+	func validateIpAddress(ipToValidate: String) -> Bool {
+		
+		var sin = sockaddr_in()
+		
+		if ipToValidate.withCString({ cstring in inet_pton(AF_INET, cstring, &sin.sin_addr) }) == 1 {
+			// IPv4 peer.
+			return true
+		}
+		return false;
+	}
+	
+	override func prepare(for segue: UIStoryboardSegue, sender: Any?) {
+		switch segue.identifier {
+		case "addVirtualDeviceSegue"? :
+			let vc = segue.destination
+			vc.preferredContentSize = CGSize(width: 350, height: 350)
+		default:
+			break
+		}
+	}
+	
+	// MARK: -
+	// MARK: Textfield delegate methods
+	
+	func textFieldDidBeginEditing(_ textField: UITextField) {
+		
 	}
 	
 	
-	
-	//MARK: Connection Status from ther devices changed
-	fileprivate func onConnectionStatusChanged(isConnected:Bool, context:Optional<UnsafeMutableRawPointer>) -> (){
+	func textField(_ textField: UITextField, shouldChangeCharactersIn range: NSRange, replacementString string: String) -> Bool{
 		
-		if (debug){
-			print("ABL: onConnectionStatusChanged")
+		if Int(string) != nil {
+			return true
+		} else {
+			if( string == "" || string == "."){
+				return true
+			} else{
+				return false
+			}
 		}
 		
-		
-		if (debug){
-			print("ABL: isConnected",isConnected)
-		}
-		
-		delegate?.connectionStatusChange(enable: isConnected)
 	}
 	
-	
-	//MARK: onLinkEnabled
-	fileprivate func onLinkEnabled(isEnabled:Bool, context:Optional<UnsafeMutableRawPointer>) -> (){
+	func onDeviceArrival(_ device: XHL_Device, supportState: XHL_SupportState, busType: XHL_BusType, name: String, description: String) -> Bool{
 		
-		if (debug){
-			print("ABL: Link is", isEnabled)
-		}
-		delegate?.linkEnabled(enable: isEnabled)
+		return true
 	}
 	
-	//MARK: Metronome loop sub function
-	fileprivate func updateEngineData() -> EngineData {
+	func onDeviceLeft(_ device: XHL_Device, busType: XHL_BusType) -> Bool{
 		
-		//create new engine object with generic values
-		var output:EngineData = EngineData()
-		
-		// Always reset the signaling members to their default state
-		output.resetToBeatTime = INVALID_BEAT_TIME
-		output.proposeBpm = INVALID_BPM
-		
-		// Attempt to grab the lock guarding the shared engine data but
-		// don't block if we can't get it.
-		if (OSSpinLockTry(&lock)) {
-			//if (os_unfair_lock_trylock(&lock)) { //ios 10
-			
-			// Copy non-signaling members to the local thread cache
-			linkData!.localEngineData.outputLatency = linkData!.sharedEngineData.outputLatency
-			linkData!.localEngineData.quantum = linkData!.sharedEngineData.quantum
-			linkData!.localEngineData.isPlaying = linkData!.sharedEngineData.isPlaying
-			
-			// Copy signaling members directly to the output and reset
-			output.resetToBeatTime = linkData!.sharedEngineData.resetToBeatTime
-			linkData!.sharedEngineData.resetToBeatTime = INVALID_BEAT_TIME
-			
-			output.proposeBpm = linkData!.sharedEngineData.proposeBpm
-			linkData!.sharedEngineData.proposeBpm = INVALID_BPM
-			
-			OSSpinLockUnlock(&lock)
-			//os_unfair_lock_unlock(&lock) //ios10
-		}
-		
-		// Copy from the thread local copy to the output. This happens
-		// whether or not we were able to grab the lock.
-		output.outputLatency = linkData!.localEngineData.outputLatency
-		output.quantum = linkData!.localEngineData.quantum
-		output.isPlaying = linkData!.localEngineData.isPlaying
-		
-		if (output.proposeBpm != INVALID_BEAT_TIME){
-			if (debug) { print("ABL: output propose bpm = ", output.proposeBpm) }
-		}
-		
-		return output
+		return true
 	}
 	
- 
-	
-	
-	
-	//MARK:-
-	//MARK: DEINIT
-	
-	
-	
-	deinit {
-		// perform the deinitialization
-		
-		if (linkData != nil){
-			ABLLinkDelete(linkData!.ablLink)
-			//deletes Link (don't have multiples of this). Do this during app shutdown
-		}
-		
+	func onDeviceListChanged(){
+		self.tableView.reloadData()
 	}
 	
 	
