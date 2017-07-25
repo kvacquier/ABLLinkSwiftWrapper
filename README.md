@@ -1,5 +1,6 @@
 # ABLLinkSwiftWrapper
 Swift wrapper for ABLLink. Allows Swift-based programs to access the ABLLink functions.
+Original repo here : https://github.com/jasonjsnell/ABLLinkSwiftWrapper
 
 REQUIRED:
 
@@ -14,3 +15,5 @@ libABLLink.a
 
 These can be found here: https://github.com/Ableton/LinkKit/releases
 
+
+The actual project is an exemple with the bridging header to help you.
