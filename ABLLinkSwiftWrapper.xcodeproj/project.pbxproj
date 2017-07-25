@@ -7,13 +7,19 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		965CC74D1EC3713B00A8893D /* LinkWrapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 965CC74C1EC3713B00A8893D /* LinkWrapper.swift */; };
+		0A115C8E1F276EC30021A577 /* libABLLink.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 0A115C8D1F276EC30021A577 /* libABLLink.a */; };
+		965CC74D1EC3713B00A8893D /* AbletonLinkWrapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 965CC74C1EC3713B00A8893D /* AbletonLinkWrapper.swift */; };
 		965CC7551EC3721000A8893D /* libc++.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 965CC7541EC3721000A8893D /* libc++.tbd */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		0A115C891F276EBA0021A577 /* ABLLink.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ABLLink.h; sourceTree = "<group>"; };
+		0A115C8A1F276EBA0021A577 /* ABLLinkSettingsViewController.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ABLLinkSettingsViewController.h; sourceTree = "<group>"; };
+		0A115C8B1F276EBA0021A577 /* ABLLinkUtils.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ABLLinkUtils.h; sourceTree = "<group>"; };
+		0A115C8D1F276EC30021A577 /* libABLLink.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libABLLink.a; sourceTree = "<group>"; };
+		0A115C8F1F276ED90021A577 /* ABLLinkSwiftWrapper-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "ABLLinkSwiftWrapper-Bridging-Header.h"; sourceTree = "<group>"; };
 		965CC7371EC3711400A8893D /* ABLLinkSwiftWrapper.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ABLLinkSwiftWrapper.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		965CC74C1EC3713B00A8893D /* LinkWrapper.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = LinkWrapper.swift; sourceTree = "<group>"; };
+		965CC74C1EC3713B00A8893D /* AbletonLinkWrapper.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = AbletonLinkWrapper.swift; sourceTree = "<group>"; };
 		965CC7541EC3721000A8893D /* libc++.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = "libc++.tbd"; path = "usr/lib/libc++.tbd"; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -23,12 +29,31 @@
 			buildActionMask = 2147483647;
 			files = (
 				965CC7551EC3721000A8893D /* libc++.tbd in Frameworks */,
+				0A115C8E1F276EC30021A577 /* libABLLink.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		0A115C881F276EBA0021A577 /* include */ = {
+			isa = PBXGroup;
+			children = (
+				0A115C891F276EBA0021A577 /* ABLLink.h */,
+				0A115C8A1F276EBA0021A577 /* ABLLinkSettingsViewController.h */,
+				0A115C8B1F276EBA0021A577 /* ABLLinkUtils.h */,
+			);
+			path = include;
+			sourceTree = "<group>";
+		};
+		0A115C8C1F276EC30021A577 /* lib */ = {
+			isa = PBXGroup;
+			children = (
+				0A115C8D1F276EC30021A577 /* libABLLink.a */,
+			);
+			path = lib;
+			sourceTree = "<group>";
+		};
 		965CC72E1EC3711400A8893D = {
 			isa = PBXGroup;
 			children = (
@@ -49,7 +74,10 @@
 		965CC7391EC3711400A8893D /* ABLLinkSwiftWrapper */ = {
 			isa = PBXGroup;
 			children = (
-				965CC74C1EC3713B00A8893D /* LinkWrapper.swift */,
+				965CC74C1EC3713B00A8893D /* AbletonLinkWrapper.swift */,
+				0A115C8C1F276EC30021A577 /* lib */,
+				0A115C881F276EBA0021A577 /* include */,
+				0A115C8F1F276ED90021A577 /* ABLLinkSwiftWrapper-Bridging-Header.h */,
 			);
 			path = ABLLinkSwiftWrapper;
 			sourceTree = "<group>";
@@ -94,7 +122,8 @@
 				TargetAttributes = {
 					965CC7361EC3711400A8893D = {
 						CreatedOnToolsVersion = 8.3.2;
-						DevelopmentTeam = LN2HJCURK9;
+						DevelopmentTeam = RK36ZAQX82;
+						LastSwiftMigration = 0830;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -132,7 +161,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				965CC74D1EC3713B00A8893D /* LinkWrapper.swift in Sources */,
+				965CC74D1EC3713B00A8893D /* AbletonLinkWrapper.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -238,16 +267,20 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				DEVELOPMENT_TEAM = LN2HJCURK9;
+				CLANG_ENABLE_MODULES = YES;
+				DEVELOPMENT_TEAM = RK36ZAQX82;
 				INFOPLIST_FILE = ABLLinkSwiftWrapper/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 9.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/ABLLinkSwiftWrapper",
+					"$(PROJECT_DIR)/ABLLinkSwiftWrapper/lib",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.jasonjsnell.ABLLinkSwiftWrapper;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OBJC_BRIDGING_HEADER = "ABLLinkSwiftWrapper/ABLLinkSwiftWrapper-Bridging-Header.h";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 3.0;
 			};
 			name = Debug;
@@ -256,16 +289,19 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				DEVELOPMENT_TEAM = LN2HJCURK9;
+				CLANG_ENABLE_MODULES = YES;
+				DEVELOPMENT_TEAM = RK36ZAQX82;
 				INFOPLIST_FILE = ABLLinkSwiftWrapper/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 9.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/ABLLinkSwiftWrapper",
+					"$(PROJECT_DIR)/ABLLinkSwiftWrapper/lib",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.jasonjsnell.ABLLinkSwiftWrapper;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OBJC_BRIDGING_HEADER = "ABLLinkSwiftWrapper/ABLLinkSwiftWrapper-Bridging-Header.h";
 				SWIFT_VERSION = 3.0;
 			};
 			name = Release;
@@ -289,6 +325,7 @@
 				965CC74B1EC3711400A8893D /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
 	};
