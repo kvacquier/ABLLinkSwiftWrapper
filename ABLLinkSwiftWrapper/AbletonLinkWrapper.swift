@@ -359,6 +359,9 @@ public class AbletonLinkWrapper:NSObject {
 		}
 	}
  
+	func setBpm(bpm: Double) {
+		ABLLinkSetTempo(ABLLinkCaptureAppTimeline(linkData!.ablLink), bpm, mach_absolute_time())
+	}
 	
 	func getBeat() -> Float64 {
 		
@@ -376,6 +379,13 @@ public class AbletonLinkWrapper:NSObject {
 			return 0
 		}
 		
+	}
+	
+	
+	//Attempt to map the given beat time to the given host time in the context. Now by default.
+	
+	func requestBeatAtTime(beatTime: Double, hostTimeAtOutput: UInt64 = mach_absolute_time()) {
+		ABLLinkRequestBeatAtTime(ABLLinkCaptureAppTimeline(linkData!.ablLink), beatTime, hostTimeAtOutput, getQuantum())
 	}
 	
 	//not being used, "beat" in Position is being calculated with the getBeat
@@ -398,7 +408,7 @@ public class AbletonLinkWrapper:NSObject {
 		
 	}
 	
-	
+	// Quantum = number of beat per mesure, usualy 4
 	func getQuantum() -> Float64 {
 		
 		if (linkData != nil){
